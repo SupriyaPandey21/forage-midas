@@ -8,10 +8,26 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.annotation.DirtiesContext;
 
-@SpringBootTest
+import java.util.concurrent.ExecutionException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import com.jpmc.midascore.component.TransactionListener;
+
+
+@SpringBootTest(
+        properties = {"midas.transactions-topic=test-topic"}
+)
 @DirtiesContext
-@EmbeddedKafka(partitions = 1, brokerProperties = {"listeners=PLAINTEXT://localhost:9092", "port=9092"})
+@EmbeddedKafka(
+        partitions = 1,
+        brokerProperties = {
+                "listeners=PLAINTEXT://localhost:9092",
+                "port=9092"
+        }
+)
 class TaskTwoTests {
+
     static final Logger logger = LoggerFactory.getLogger(TaskTwoTests.class);
 
     @Autowired
@@ -20,22 +36,49 @@ class TaskTwoTests {
     @Autowired
     private FileLoader fileLoader;
 
+    @Autowired
+    private TransactionListener transactionListener;
+
     @Test
     void task_two_verifier() throws InterruptedException {
+
+        System.out.println("TEST STARTED");
+
         String[] transactionLines = fileLoader.loadStrings("/test_data/poiuytrewq.uiop");
+        System.out.println("FILE LOADED, lines = " + transactionLines.length);
+
+        // send messages asynchronously
         for (String transactionLine : transactionLines) {
-            kafkaProducer.send(transactionLine);
+            System.out.println("SENDING: " + transactionLine);
+            kafkaProducer.send(transactionLine); // remove .get()
         }
-        Thread.sleep(2000);
-        logger.info("----------------------------------------------------------");
-        logger.info("----------------------------------------------------------");
-        logger.info("----------------------------------------------------------");
-        logger.info("use your debugger to watch for incoming transactions");
-        logger.info("kill this test once you find the answer");
-        while (true) {
-            Thread.sleep(20000);
-            logger.info("...");
+
+        System.out.println("MESSAGES SENT");
+
+        int attempts = 0;
+        while (transactionListener.getReceivedTransactions().size() < transactionLines.length && attempts < 10) {
+            Thread.sleep(500);
+            attempts++;
         }
+
+        System.out.println("Received transaction amounts:");
+        transactionListener.getReceivedTransactions()
+                .forEach(t -> System.out.println(t.getAmount()));
+
+        // Verify each transaction matches the file
+        for (int i = 0; i < transactionLines.length; i++) {
+            double expectedAmount = extractAmountFromJson(transactionLines[i]);
+            double actualAmount = transactionListener.getReceivedTransactions().get(i).getAmount();
+            assertEquals(expectedAmount, actualAmount, 0.001, "Amount mismatch at transaction " + (i + 1));
+        }
+
+        // Verify total number of transactions
+        assertEquals(transactionLines.length, transactionListener.getReceivedTransactions().size());
     }
 
+    // Helper method for extracting amount from JSON line
+    private double extractAmountFromJson(String jsonLine) {
+        String amountStr = jsonLine.split("\"amount\":")[1].replaceAll("[^0-9.]", "");
+        return Double.parseDouble(amountStr);
+    }
 }
